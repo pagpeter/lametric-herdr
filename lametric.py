@@ -49,13 +49,11 @@ class LaMetric:
         return next(iter(apps["widgets"]))
 
     def set_clockface(self, icon: str, widget_id: str = "", activate: bool = False) -> None:
-        """Replace the clock app's icon; the clock keeps drawing the time next to it."""
+        """Replace the clock app's icon; the clock keeps drawing the time next to it.
+        An empty icon resets the clock to its plain face."""
         widget_id = widget_id or self.clock_widget_id()
-        body = {
-            "id": "clock.clockface",
-            "params": {"type": "custom", "icon": icon},
-            "activate": activate,
-        }
+        params = {"type": "custom", "icon": icon} if icon else {"type": "none"}
+        body = {"id": "clock.clockface", "params": params, "activate": activate}
         path = f"/device/apps/com.lametric.clock/widgets/{widget_id}/actions"
         self._request("POST", self._api(path), body)
 

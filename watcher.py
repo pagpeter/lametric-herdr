@@ -39,7 +39,7 @@ REMOTE_TIMEOUT_S = 120  # the first call may have to establish SSH
 OFFLINE_GRACE_S = 60  # keep a lost machine's agents this long before dropping them
 RENDER_DEBOUNCE_S = 0.2
 DEVICE_RETRY_S = 15
-HOUSEKEEPING_S = 60
+HOUSEKEEPING_S = 15  # also how quickly an uninstall is noticed
 
 
 def log(msg: str) -> None:
@@ -167,6 +167,7 @@ class Watcher:
         self.dev = plugin.device(self.cfg)
         try:
             if not self.still_wanted():
+                self.reset_clockface()
                 self.running = False
                 return
             self.sync_machines()
@@ -174,7 +175,7 @@ class Watcher:
         except (subprocess.SubprocessError, OSError, ValueError, KeyError, AttributeError) as e:
             self.housekeeping_failures += 1
             log(f"housekeeping failed ({self.housekeeping_failures}): {e}")
-            if self.housekeeping_failures >= 10:
+            if self.housekeeping_failures * HOUSEKEEPING_S >= 600:
                 log("herdr unreachable for 10 minutes; exiting")
                 self.running = False
 
@@ -184,6 +185,16 @@ class Watcher:
                 src.agents = None
                 src.state = "offline"
                 self.mark_dirty()
+
+    def reset_clockface(self) -> None:
+        """Plugin removed or disabled: put the plain clock back."""
+        if not self.dev:
+            return
+        try:
+            self.dev.set_clockface("", self.clock_widget)
+            log("clockface reset")
+        except LaMetricError as e:
+            log(f"could not reset clockface: {e}")
 
     # --- poll results --------------------------------------------------------
 
