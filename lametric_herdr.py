@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""herdr plugin: mirror agent state onto a LaMetric Time.
+"""herdr plugin: mirror agent state from all herdr machines onto a LaMetric Time.
+
+All live work happens in one background watcher (watcher.py). herdr hooks only
+make sure it is running, so installing the plugin is the whole setup.
 
 Commands:
-  event          event hook entrypoint (reads HERDR_PLUGIN_EVENT_JSON)
-  refresh        push the current state to the widget
-  test           send a test notification and refresh the widget
-  toggle-alerts  turn transient notifications on/off (widget keeps updating)
-  preview        render what the device would show in this terminal
+  ensure         start the watcher unless it is already running (hooks)
+  refresh        force the watcher to redraw the clock (starts it if needed)
+  restart        restart the watcher
+  stop           stop the watcher
+  status         show the watcher and per-machine state
+  test           check the device connection and send a test alert
+  toggle-alerts  turn transient notifications on/off (the clock keeps updating)
+  preview        render the current local agents in this terminal
 """
 
 from __future__ import annotations
@@ -14,12 +20,12 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pixels
 from lametric import LaMetric, LaMetricError
@@ -28,8 +34,13 @@ ROOT = Path(__file__).resolve().parent
 CONFIG_DIR = Path(os.environ.get("HERDR_PLUGIN_CONFIG_DIR") or ROOT / ".local" / "config")
 STATE_DIR = Path(os.environ.get("HERDR_PLUGIN_STATE_DIR") or ROOT / ".local" / "state")
 HERDR = os.environ.get("HERDR_BIN_PATH") or "herdr"
+PLUGIN_ID = os.environ.get("HERDR_PLUGIN_ID") or "lametric-herdr"
 
-STATUS_ORDER = ["blocked", "done", "working", "unknown", "idle"]
+LOCK_FILE = STATE_DIR / "watcher.lock"
+PID_FILE = STATE_DIR / "watcher.pid"
+STATUS_FILE = STATE_DIR / "status.json"
+LOG_FILE = STATE_DIR / "watcher.log"
+
 GENERIC_TITLES = {"", "claude code", "claude", "codex", "pi"}
 
 
@@ -40,11 +51,10 @@ def load_config() -> Dict[str, str]:
     cfg = {
         "LAMETRIC_HOST": "",
         "LAMETRIC_API_KEY": "",
-        "LAMETRIC_PUSH_URL": "",
         "ALERT_ON": "blocked,done",
         "ALERT_PRIORITY": "info",
         "ALERT_CYCLES": "1",
-        "DEBUG": "0",
+        "REMOTE_POLL_SECONDS": "",
     }
     env_file = CONFIG_DIR / ".env"
     if env_file.exists():
@@ -60,58 +70,47 @@ def load_config() -> Dict[str, str]:
     return cfg
 
 
-def load_state() -> Dict[str, Any]:
+def alerts_enabled() -> bool:
     try:
-        return json.loads((STATE_DIR / "state.json").read_text())
+        return bool(json.loads((STATE_DIR / "state.json").read_text()).get("alerts", True))
     except (OSError, ValueError):
-        return {"alerts": True, "panes": {}}
+        return True
 
 
-def save_state(state: Dict[str, Any]) -> None:
+def set_alerts(enabled: bool) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_DIR / "state.json.tmp"
-    tmp.write_text(json.dumps(state, indent=2))
-    tmp.replace(STATE_DIR / "state.json")
+    (STATE_DIR / "state.json").write_text(json.dumps({"alerts": enabled}))
 
 
-@contextmanager
-def locked() -> Iterator[None]:
-    """Event hooks can run concurrently; serialize read-modify-write."""
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    with open(STATE_DIR / "lock", "w") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        yield
-
-
-def log(msg: str) -> None:
-    print(msg, file=sys.stderr)
-
-
-def debug(cfg: Dict[str, str], name: str, payload: Any) -> None:
-    if cfg["DEBUG"] in ("1", "true", "yes"):
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        with open(STATE_DIR / "debug.jsonl", "a") as fh:
-            fh.write(json.dumps({"t": time.time(), name: payload}) + "\n")
+def device(cfg: Dict[str, str]) -> Optional[LaMetric]:
+    if not cfg["LAMETRIC_HOST"] or not cfg["LAMETRIC_API_KEY"]:
+        return None
+    return LaMetric(cfg["LAMETRIC_HOST"], cfg["LAMETRIC_API_KEY"])
 
 
 # --- herdr ------------------------------------------------------------------
 
 
-def list_agents() -> List[Dict[str, Any]]:
+def herdr_json(*args: str) -> Any:
     out = subprocess.run(
-        [HERDR, "agent", "list"], capture_output=True, text=True, timeout=10, check=True
+        [HERDR, *args], capture_output=True, text=True, timeout=15, check=True
     ).stdout
-    agents = json.loads(out)["result"]["agents"]
-    return sorted(agents, key=lambda a: _pane_sort_key(a.get("pane_id", "")))
+    return json.loads(out)
 
 
-def _pane_sort_key(pane_id: str) -> List[Any]:
-    # "w12:p3" -> [12, 3] so workspaces order numerically
-    return [int(p[1:]) if p[1:].isdigit() else p for p in pane_id.split(":")]
+def pane_sort_key(pane_id: str) -> List[int]:
+    # herdr ids are base-36 counters: "wE:p1" -> [14, 1]
+    key = []
+    for part in pane_id.split(":"):
+        try:
+            key.append(int(part[1:], 36))
+        except ValueError:
+            key.append(-1)
+    return key
 
 
 def label(agent: Dict[str, Any]) -> str:
-    title = (agent.get("title") or agent.get("terminal_title_stripped") or "").strip()
+    title = (agent.get("terminal_title_stripped") or "").strip()
     if title.lower() in GENERIC_TITLES or title.lower() == str(agent.get("agent", "")).lower():
         cwd = agent.get("foreground_cwd") or agent.get("cwd") or ""
         title = os.path.basename(cwd.rstrip("/")) or title or "agent"
@@ -121,112 +120,104 @@ def label(agent: Dict[str, Any]) -> str:
 # --- rendering --------------------------------------------------------------
 
 
-def summary_text(statuses: List[str]) -> str:
-    if not statuses:
-        return "-"
-    for status, word in (("blocked", "WAIT"), ("done", "DONE"), ("working", "RUN")):
-        n = statuses.count(status)
-        if n:
-            return f"{n} {word}"
-    return "IDLE"
-
-
-def widget_frames(agents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    statuses = [a.get("agent_status", "unknown") for a in agents][:16]
-    icon = pixels.data_uri(pixels.agent_grid(statuses))
-    return [{"index": 0, "icon": icon, "text": summary_text(statuses)}]
+def clock_icon(statuses: List[str]) -> str:
+    return pixels.data_uri(pixels.agent_grid(statuses[:16]))
 
 
 def alert_frames(status: str, text: str) -> List[Dict[str, Any]]:
     return [{"icon": pixels.data_uri(pixels.alert_icon(status)), "text": text}]
 
 
+# --- watcher process management ---------------------------------------------
+
+
+def watcher_pid() -> Optional[int]:
+    """PID of the running watcher, or None. The watcher holds an exclusive
+    flock for its whole lifetime, so a free lock means it is not running."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(LOCK_FILE, "a") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            try:
+                return int(PID_FILE.read_text().strip())
+            except (OSError, ValueError):
+                return -1
+        fcntl.flock(fh, fcntl.LOCK_UN)
+    return None
+
+
+def start_watcher() -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(LOG_FILE, "a") as log_fh:
+        subprocess.Popen(
+            [sys.executable, str(ROOT / "watcher.py")],
+            cwd=str(ROOT),
+            stdin=subprocess.DEVNULL,
+            stdout=log_fh,
+            stderr=log_fh,
+            start_new_session=True,  # survive the hook process that started it
+            close_fds=True,
+        )
+
+
+def signal_watcher(sig: int) -> bool:
+    pid = watcher_pid()
+    if pid and pid > 0:
+        try:
+            os.kill(pid, sig)
+            return True
+        except OSError:
+            pass
+    return False
+
+
 # --- commands ---------------------------------------------------------------
 
 
-def device(cfg: Dict[str, str]) -> Optional[LaMetric]:
-    if not cfg["LAMETRIC_HOST"] or not cfg["LAMETRIC_API_KEY"]:
-        log(f"not configured: set LAMETRIC_HOST and LAMETRIC_API_KEY in {CONFIG_DIR / '.env'}")
-        return None
-    return LaMetric(cfg["LAMETRIC_HOST"], cfg["LAMETRIC_API_KEY"], cfg["LAMETRIC_PUSH_URL"])
-
-
-def push_widget(
-    cfg: Dict[str, str],
-    dev: Optional[LaMetric],
-    agents: List[Dict[str, Any]],
-    state: Dict[str, Any],
-    force: bool = False,
-) -> None:
-    """Redraw the clockface. Skipped when the icon is unchanged, because focus
-    events fire constantly while navigating and usually change nothing."""
-    frames = widget_frames(agents)
-    icon = frames[0]["icon"]
-    if not dev or (not force and state.get("icon") == icon):
-        return
-    debug(cfg, "widget", frames[0]["text"])
-    if not state.get("clock_widget"):
-        state["clock_widget"] = dev.clock_widget_id()
-    dev.set_clockface(icon, state["clock_widget"])
-    if cfg["LAMETRIC_PUSH_URL"]:
-        dev.push_widget(frames)
-    state["icon"] = icon
-
-
-def cmd_event() -> int:
-    cfg = load_config()
-    event = json.loads(os.environ.get("HERDR_PLUGIN_EVENT_JSON") or "{}")
-    debug(cfg, "event", event)
-    data = event.get("data") or {}
-    pane_id = data.get("pane_id")
-    status = data.get("agent_status")
-    dev = device(cfg)
-
-    with locked():
-        state = load_state()
-        agents = list_agents()
-        errors = []
-        try:
-            push_widget(cfg, dev, agents, state)
-        except LaMetricError as e:
-            errors.append(e)
-
-        previous = state["panes"].get(pane_id) if pane_id else None
-        alert_on = {s.strip() for s in cfg["ALERT_ON"].split(",") if s.strip()}
-        if dev and state.get("alerts", True) and status in alert_on and status != previous:
-            agent = next((a for a in agents if a.get("pane_id") == pane_id), {})
-            text = label({**agent, **{k: v for k, v in data.items() if v}})
-            try:
-                dev.notify(alert_frames(status, text), cfg["ALERT_PRIORITY"], int(cfg["ALERT_CYCLES"]))
-            except LaMetricError as e:
-                errors.append(e)
-
-        state["panes"] = {a["pane_id"]: a.get("agent_status") for a in agents if a.get("pane_id")}
-        if pane_id and status:
-            state["panes"][pane_id] = status
-        save_state(state)
-
-    for e in errors:
-        log(str(e))
-    # Device errors are logged but not fatal: herdr should not see a failing hook
-    # just because the clock is offline.
+def cmd_ensure() -> int:
+    if watcher_pid() is None:
+        start_watcher()
     return 0
 
 
 def cmd_refresh() -> int:
-    cfg = load_config()
-    dev = device(cfg)
-    with locked():
-        agents = list_agents()
-        state = load_state()
-        state["panes"] = {a["pane_id"]: a.get("agent_status") for a in agents if a.get("pane_id")}
-        try:
-            push_widget(cfg, dev, agents, state, force=True)
-        except LaMetricError as e:
-            log(str(e))
-            return 1
-        finally:
-            save_state(state)
+    if not signal_watcher(signal.SIGUSR1):
+        start_watcher()
+    return 0
+
+
+def cmd_stop() -> int:
+    if not signal_watcher(signal.SIGTERM):
+        print("watcher not running", file=sys.stderr)
+        return 0
+    for _ in range(150):  # the watcher lets in-flight remote calls finish
+        if watcher_pid() is None:
+            return 0
+        time.sleep(0.1)
+    print("watcher did not stop", file=sys.stderr)
+    return 1
+
+
+def cmd_restart() -> int:
+    cmd_stop()
+    start_watcher()
+    return 0
+
+
+def cmd_status() -> int:
+    pid = watcher_pid()
+    print(f"watcher: {'running, pid ' + str(pid) if pid else 'not running'}")
+    print(f"alerts: {'on' if alerts_enabled() else 'off'}")
+    try:
+        status = json.loads(STATUS_FILE.read_text())
+    except (OSError, ValueError):
+        return 0
+    age = time.time() - status.get("t", 0)
+    print(f"updated {age:.0f}s ago, device: {status.get('device')}")
+    for src in status.get("sources", []):
+        agents = " ".join(src.get("statuses", []))
+        print(f"  {src['label']:24} {src['state']:12} {agents}")
     return 0
 
 
@@ -234,41 +225,42 @@ def cmd_test() -> int:
     cfg = load_config()
     dev = device(cfg)
     if not dev:
+        print(f"not configured: set LAMETRIC_HOST and LAMETRIC_API_KEY in {CONFIG_DIR / '.env'}",
+              file=sys.stderr)
         return 1
     try:
         info = dev.device()
-        log(f"connected: {info.get('name')} ({info.get('model')}, os {info.get('os_version')})")
+        print(f"connected: {info.get('name')} ({info.get('model')}, os {info.get('os_version')})")
         dev.notify(alert_frames("done", "herdr connected"), cfg["ALERT_PRIORITY"], 1)
     except LaMetricError as e:
-        log(str(e))
+        print(str(e), file=sys.stderr)
         return 1
     return cmd_refresh()
 
 
 def cmd_toggle_alerts() -> int:
-    with locked():
-        state = load_state()
-        state["alerts"] = not state.get("alerts", True)
-        save_state(state)
-    log(f"alerts {'on' if state['alerts'] else 'off'}")
+    enabled = not alerts_enabled()
+    set_alerts(enabled)
+    print(f"alerts {'on' if enabled else 'off'}")
     return 0
 
 
 def cmd_preview() -> int:
-    agents = list_agents()
-    statuses = [a.get("agent_status", "unknown") for a in agents][:16]
-    print(pixels.ansi(pixels.agent_grid(statuses)), f"  {summary_text(statuses)}")
+    agents = sorted(herdr_json("agent", "list")["result"]["agents"],
+                    key=lambda a: pane_sort_key(a.get("pane_id", "")))
+    statuses = [a.get("agent_status", "unknown") for a in agents]
+    print(pixels.ansi(pixels.agent_grid(statuses[:16])))
     for a in agents:
         print(f"  {a.get('pane_id'):8} {a.get('agent_status'):8} {label(a)}")
-    print()
-    for status in ("blocked", "done"):
-        print(pixels.ansi(pixels.alert_icon(status)), f"  {status} alert")
     return 0
 
 
 COMMANDS = {
-    "event": cmd_event,
+    "ensure": cmd_ensure,
     "refresh": cmd_refresh,
+    "restart": cmd_restart,
+    "stop": cmd_stop,
+    "status": cmd_status,
     "test": cmd_test,
     "toggle-alerts": cmd_toggle_alerts,
     "preview": cmd_preview,

@@ -1,24 +1,46 @@
 # lametric-herdr
 
-A [herdr](https://herdr.dev) plugin that shows the state of your coding agents
-on a LaMetric Time. Visual only, no sound.
+A [herdr](https://herdr.dev) plugin that shows the state of your coding agents,
+across all your herdr machines, on a LaMetric Time. Visual only, no sound.
 
-- **Agent grid (always on):** the My Data DIY widget's icon is an 8×8 grid with
-  one block per agent. Working agents pulse cyan, blocked agents blink amber,
-  unseen finished agents are green, and idle agents are barely-lit gray. The
-  text shows the most urgent count: `1 WAIT`, `2 DONE`, `3 RUN`, or `IDLE`.
-- **Alerts (transient):** when an agent becomes `blocked` or `done`, a silent
-  `info` notification scrolls the agent's title once, then the display returns
-  to the widget.
+The clock app's icon becomes a live grid with one 2×2 block per agent, in
+herdr's status colors:
+
+| State | Block |
+|---|---|
+| idle | green, one pixel missing (herdr's ○) |
+| working | yellow, pulsing |
+| done (not yet viewed) | teal |
+| blocked (needs input) | red, pulsing |
+
+Up to 9 agents fit with gaps, 16 without. Local agents come first, then each
+saved machine in `herdr machine list` order. When an agent becomes blocked or
+done, a silent notification scrolls its title once.
+
+## How it works
+
+One background watcher (`watcher.py`) does all the work:
+
+- **Local agents:** `agent.list` over the herdr socket every second.
+- **Saved machines:** `herdr --machine <id> agent list` every 2 seconds. herdr
+  owns the SSH connection and reuses it between calls, so the plugin holds no
+  credentials and runs none of its own code on remote machines.
+- Redraws the clock only when the grid changes.
+
+Polling instead of events: herdr only offers per-pane status subscriptions,
+and a finished agent turns from done to idle without any event when you view
+it.
+
+herdr hooks (startup, and frequent events such as pane focus) only make sure
+the watcher is running, so installing the plugin is the whole setup. The
+watcher exits when the plugin is disabled, unlinked, or reinstalled.
 
 Python 3.9+ standard library only.
 
 ## Setup
 
-1. On the device: install **My Data DIY** from the LaMetric app store, set it to
-   **Local Push**, and copy the push URL it shows.
-2. Get the device API key: developer.lametric.com → Devices.
-3. Link the plugin and configure it:
+1. Get the device API key: developer.lametric.com → Devices.
+2. Install the plugin and configure it:
 
    ```bash
    herdr plugin link ~/coding/own/lametric-herdr
@@ -27,25 +49,23 @@ Python 3.9+ standard library only.
    herdr plugin action invoke lametric-herdr.test
    ```
 
-4. To keep agent state on screen permanently, turn off app auto-rotation in the
-   LaMetric app and leave the DIY widget as the active app.
-
 ## Commands
 
 | Action | What it does |
 |---|---|
-| `lametric-herdr.refresh` | Push the current state to the widget |
-| `lametric-herdr.test` | Check the connection, send a test alert, refresh |
-| `lametric-herdr.toggle-alerts` | Turn alerts on/off; the widget keeps updating |
+| `lametric-herdr.status` | Watcher, device, and per-machine state |
+| `lametric-herdr.refresh` | Force a redraw and re-read machines and config |
+| `lametric-herdr.test` | Check the connection and send a test alert |
+| `lametric-herdr.toggle-alerts` | Turn alerts on/off; the clock keeps updating |
+| `lametric-herdr.restart` | Restart the watcher |
 
-`python3 lametric_herdr.py preview` renders the grid and alert icons in your
-terminal without touching the device.
+Action output: `herdr plugin log list --plugin lametric-herdr`. Watcher log:
+`watcher.log` in the plugin state directory (`~/.local/state/herdr/plugins/lametric-herdr`).
 
-## Debugging
+## LaMetric Time v1 notes
 
-```bash
-herdr plugin log list --plugin lametric-herdr
-```
-
-Set `DEBUG=1` in the config to log events to `debug.jsonl` in the plugin state
-directory.
+- The display is "mixed": the left 8×8 is RGB, the remaining 29×8 is white-only.
+  A wide GIF icon shows color in the 8×8 and drops every non-gray pixel elsewhere.
+- Channel values below ~90 do not light up, so dim animation steps stay above that.
+- The clock app's `clock.clockface` action accepts a custom (animated) icon, so
+  the agent grid sits next to the time without changing apps.

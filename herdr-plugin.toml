@@ -1,49 +1,29 @@
 id = "lametric-herdr"
 name = "LaMetric"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.9.0"
-description = "Show agent state on a LaMetric Time: an always-on agent grid plus silent alerts."
+description = "Show the state of agents on all your herdr machines on a LaMetric Time clock."
 platforms = ["macos", "linux"]
 
+# All live work happens in one background watcher (watcher.py). These hooks
+# only make sure it is running: at server start, and on frequent events so a
+# fresh install or a crashed watcher recovers within seconds. `ensure` exits
+# immediately when the watcher is already up.
+
 [[startup]]
-command = ["python3", "lametric_herdr.py", "refresh"]
+command = ["python3", "lametric_herdr.py", "ensure"]
 
 [[events]]
 on = "pane.agent_status_changed"
-command = ["python3", "lametric_herdr.py", "event"]
-
-# Re-read the agent list on events that change it without a status event:
-# viewing a finished agent turns done -> idle silently (herdr marks it seen),
-# and agents appear or disappear with their panes. Unchanged icons are not
-# re-sent, so frequent focus events stay cheap.
+command = ["python3", "lametric_herdr.py", "ensure"]
 
 [[events]]
 on = "pane.focused"
-command = ["python3", "lametric_herdr.py", "event"]
-
-[[events]]
-on = "tab.focused"
-command = ["python3", "lametric_herdr.py", "event"]
+command = ["python3", "lametric_herdr.py", "ensure"]
 
 [[events]]
 on = "workspace.focused"
-command = ["python3", "lametric_herdr.py", "event"]
-
-[[events]]
-on = "pane.agent_detected"
-command = ["python3", "lametric_herdr.py", "event"]
-
-[[events]]
-on = "pane.exited"
-command = ["python3", "lametric_herdr.py", "event"]
-
-[[events]]
-on = "pane.closed"
-command = ["python3", "lametric_herdr.py", "event"]
-
-[[events]]
-on = "workspace.closed"
-command = ["python3", "lametric_herdr.py", "event"]
+command = ["python3", "lametric_herdr.py", "ensure"]
 
 [[actions]]
 id = "refresh"
@@ -59,3 +39,13 @@ command = ["python3", "lametric_herdr.py", "test"]
 id = "toggle-alerts"
 title = "LaMetric: toggle alerts"
 command = ["python3", "lametric_herdr.py", "toggle-alerts"]
+
+[[actions]]
+id = "status"
+title = "LaMetric: status"
+command = ["python3", "lametric_herdr.py", "status"]
+
+[[actions]]
+id = "restart"
+title = "LaMetric: restart watcher"
+command = ["python3", "lametric_herdr.py", "restart"]

@@ -17,10 +17,9 @@ class LaMetricError(Exception):
 
 
 class LaMetric:
-    def __init__(self, host: str, api_key: str, push_url: str = "") -> None:
+    def __init__(self, host: str, api_key: str) -> None:
         self.host = host
         self.api_key = api_key
-        self.push_url = push_url
 
     def _request(self, method: str, url: str, body: Any = None) -> Tuple[int, Any]:
         data = json.dumps(body).encode() if body is not None else None
@@ -59,11 +58,6 @@ class LaMetric:
         }
         path = f"/device/apps/com.lametric.clock/widgets/{widget_id}/actions"
         self._request("POST", self._api(path), body)
-
-    def push_widget(self, frames: list) -> None:
-        if not self.push_url:
-            raise LaMetricError("LAMETRIC_PUSH_URL is not configured")
-        self._request("POST", self.push_url, {"frames": frames})
 
     def notify(self, frames: list, priority: str = "info", cycles: int = 1) -> Optional[Any]:
         # No "sound" key: notifications stay silent.
