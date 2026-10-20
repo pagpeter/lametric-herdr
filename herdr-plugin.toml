@@ -5,47 +5,47 @@ min_herdr_version = "0.9.0"
 description = "Show the state of agents on all your herdr machines on a LaMetric Time clock."
 platforms = ["macos", "linux"]
 
-# All live work happens in one background watcher (watcher.py). These hooks
+# All live work happens in one background watcher (src/watcher.py). These hooks
 # only make sure it is running: at server start, and on frequent events so a
 # fresh install or a crashed watcher recovers within seconds. `ensure` exits
 # immediately when the watcher is already up.
 
 [[startup]]
-command = ["python3", "lametric_herdr.py", "ensure"]
+command = ["python3", "src/lametric_herdr.py", "ensure"]
 
 [[events]]
 on = "pane.agent_status_changed"
-command = ["python3", "lametric_herdr.py", "ensure"]
+command = ["python3", "src/lametric_herdr.py", "ensure"]
 
 [[events]]
 on = "pane.focused"
-command = ["python3", "lametric_herdr.py", "ensure"]
+command = ["python3", "src/lametric_herdr.py", "ensure"]
 
 [[events]]
 on = "workspace.focused"
-command = ["python3", "lametric_herdr.py", "ensure"]
+command = ["python3", "src/lametric_herdr.py", "ensure"]
 
 [[actions]]
 id = "refresh"
 title = "LaMetric: refresh"
-command = ["python3", "lametric_herdr.py", "refresh"]
+command = ["python3", "src/lametric_herdr.py", "refresh"]
 
 [[actions]]
 id = "test"
 title = "LaMetric: send test"
-command = ["python3", "lametric_herdr.py", "test"]
+command = ["python3", "src/lametric_herdr.py", "test"]
 
 [[actions]]
 id = "toggle-alerts"
 title = "LaMetric: toggle alerts"
-command = ["python3", "lametric_herdr.py", "toggle-alerts"]
+command = ["python3", "src/lametric_herdr.py", "toggle-alerts"]
 
 [[actions]]
 id = "status"
 title = "LaMetric: status"
-command = ["python3", "lametric_herdr.py", "status"]
+command = ["python3", "src/lametric_herdr.py", "status"]
 
 [[actions]]
 id = "restart"
 title = "LaMetric: restart watcher"
-command = ["python3", "lametric_herdr.py", "restart"]
+command = ["python3", "src/lametric_herdr.py", "restart"]

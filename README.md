@@ -19,7 +19,7 @@ done, a silent notification scrolls its title once.
 
 ## How it works
 
-One background watcher (`watcher.py`) does all the work:
+One background watcher (`src/watcher.py`) does all the work:
 
 - **Local agents:** `agent.list` over the herdr socket every second.
 - **Saved machines:** `herdr --machine <id> agent list` every 2 seconds. herdr
@@ -126,6 +126,24 @@ rm -rf ~/.config/herdr/plugins/config/lametric-herdr ~/.local/state/herdr/plugin
 
 Action output: `herdr plugin log list --plugin lametric-herdr`. Watcher log:
 `~/.local/state/herdr/plugins/lametric-herdr/watcher.log`.
+
+## Development
+
+```text
+herdr-plugin.toml      manifest: hooks and actions run src/lametric_herdr.py
+src/lametric_herdr.py  CLI commands
+src/watcher.py         background watcher, and starting/stopping it
+src/herdr.py           herdr API socket and CLI access
+src/lametric.py        LaMetric local API client
+src/pixels.py          icons and the GIF encoder
+src/config.py          paths, .env config, settings
+```
+
+```bash
+python3 -m unittest discover -s tests       # tests, standard library only
+python3 src/lametric_herdr.py preview       # draw local agents in the terminal
+herdr plugin action invoke lametric-herdr.restart   # pick up code changes
+```
 
 ## LaMetric Time v1 notes
 
