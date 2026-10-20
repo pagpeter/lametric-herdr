@@ -76,7 +76,7 @@ herdr plugin link /path/to/lametric-herdr
 
 ```bash
 cat > "$(herdr plugin config-dir lametric-herdr)/.env" <<'EOF'
-LAMETRIC_HOST=192.168.0.102
+LAMETRIC_HOST=your-clock-ip
 LAMETRIC_API_KEY=paste-your-api-key-here
 EOF
 chmod 600 "$(herdr plugin config-dir lametric-herdr)/.env"
