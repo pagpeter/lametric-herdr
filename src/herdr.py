@@ -14,8 +14,11 @@ BIN = os.environ.get("HERDR_BIN_PATH") or "herdr"
 # comparing two polls only reacts to changes that matter.
 AGENT_FIELDS = (
     "pane_id",
+    "tab_id",
+    "focused",
     "agent",
     "agent_status",
+    "state_change_seq",
     "terminal_title_stripped",
     "cwd",
     "foreground_cwd",
@@ -31,6 +34,21 @@ def cli_json(*args: str, timeout: float = 15) -> Any:
         [BIN, *args], capture_output=True, text=True, timeout=timeout, check=True
     ).stdout
     return json.loads(out)
+
+
+def selection_file() -> str:
+    """Where the herdr TUI records the machine it is showing."""
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return os.path.join(base, "herdr", "client", "endpoint-selection.json")
+
+
+def selected_machine() -> str | None:
+    """Saved-machine id the TUI is showing, or None for Local."""
+    try:
+        with open(selection_file()) as fh:
+            return json.load(fh).get("selected_profile")
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 def local_socket_path() -> str:

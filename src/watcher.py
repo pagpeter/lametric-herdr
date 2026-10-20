@@ -31,6 +31,7 @@ import config
 import herdr
 import pixels
 from lametric import LaMetric, LaMetricError
+from seen import DoneTracker
 
 LOCAL_INTERVAL_S = 1.0
 REMOTE_INTERVAL_S = 2.0
@@ -93,6 +94,11 @@ def send(sig: int) -> bool:
         return False
 
 
+def code_version() -> float:
+    """Changes when the plugin's code is replaced in place, as older herdr reinstalls do."""
+    return max((f.stat().st_mtime for f in config.SRC.glob("*.py")), default=0.0)
+
+
 # --- the watcher ------------------------------------------------------------
 
 
@@ -152,6 +158,11 @@ class Source:
         self.agents: Optional[list[herdr.Agent]] = None
         self.state = "connecting"
         self.lost_at: Optional[float] = None
+        self.tracker = DoneTracker()
+
+    def statuses(self) -> dict[str, str]:
+        """pane -> status as the herdr TUI shows it (done vs idle by what you have seen)."""
+        return {a["pane_id"]: self.tracker.status(a) for a in self.agents or []}
 
 
 class Watcher:
@@ -168,6 +179,10 @@ class Watcher:
         self.device_retry_at = 0.0
         self.next_housekeeping = 0.0
         self.failing_since: Optional[float] = None
+        self.selection_mtime = 0.0
+        self.selected = "local"  # the machine the herdr TUI is showing
+        self.code_version = code_version()
+        self.restart = False
         self.running = True
 
     def connect_device(self) -> Optional[LaMetric]:
@@ -217,6 +232,11 @@ class Watcher:
                 self.reset_clockface()
                 self.running = False
                 return
+            if code_version() != self.code_version:
+                log("plugin code changed; restarting")
+                self.restart = True
+                self.running = False
+                return
             self.sync_machines()
             self.failing_since = None
         except (subprocess.SubprocessError, OSError, ValueError, KeyError) as e:
@@ -225,6 +245,23 @@ class Watcher:
             if now - self.failing_since >= GIVE_UP_AFTER_S:
                 log("herdr unreachable for 10 minutes; exiting")
                 self.running = False
+
+    def check_selection(self) -> None:
+        """Follow the machine the TUI shows; its focused tab counts as seen."""
+        try:
+            mtime = os.stat(herdr.selection_file()).st_mtime
+        except OSError:
+            mtime = 0.0
+        if mtime == self.selection_mtime:
+            return
+        self.selection_mtime = mtime
+        selected = herdr.selected_machine() or "local"
+        if selected != self.selected:
+            self.selected = selected
+            src = self.sources.get(selected)
+            if src and src.agents:
+                src.tracker.acknowledge(src.agents)
+                self.mark_dirty()
 
     def expire_lost(self, now: float) -> None:
         for src in self.sources.values():
@@ -244,19 +281,22 @@ class Watcher:
             src.lost_at = src.lost_at or time.time()
             return
         agents = result["agents"]
-        self.alert_transitions(src, agents)
+        before = src.statuses() if src.agents is not None else None
+        src.tracker.update(agents, on_screen=sid == self.selected)
         if src.state != "online":
             log(f"[{src.label}] online, {len(agents)} agents ({result['took']:.1f}s)")
         src.agents, src.state, src.lost_at = agents, "online", None
+        if before is not None:
+            self.alert_transitions(before, src)
         self.mark_dirty()
 
-    def alert_transitions(self, src: Source, agents: list[herdr.Agent]) -> None:
-        if src.agents is None or not self.dev or not config.alerts_enabled():
-            return  # no baseline yet, so nothing counts as a transition
-        before = {a["pane_id"]: a["agent_status"] for a in src.agents}
+    def alert_transitions(self, before: dict[str, str], src: Source) -> None:
+        if not self.dev or not config.alerts_enabled():
+            return
         wanted = config.alert_statuses(self.cfg)
-        for a in agents:
-            status, prev = a["agent_status"], before.get(a["pane_id"])
+        after = src.statuses()
+        for a in src.agents or []:
+            status, prev = after[a["pane_id"]], before.get(a["pane_id"])
             if status in wanted and prev is not None and prev != status:
                 try:
                     self.dev.notify(pixels.alert_frames(status, herdr.label(a)),
@@ -271,10 +311,10 @@ class Watcher:
 
     def statuses(self) -> list[str]:
         return [
-            a.get("agent_status") or "unknown"
+            status
             for sid in self.order
             if sid in self.sources
-            for a in self.sources[sid].agents or []
+            for status in self.sources[sid].statuses().values()
         ]
 
     def render(self, now: float) -> None:
@@ -318,7 +358,7 @@ class Watcher:
                 {
                     "label": src.label,
                     "state": src.state,
-                    "statuses": [a.get("agent_status") for a in src.agents or []],
+                    "statuses": list(src.statuses().values()),
                 }
                 for src in (self.sources[sid] for sid in self.order if sid in self.sources)
             ],
@@ -353,6 +393,7 @@ class Watcher:
             if now >= self.next_housekeeping:
                 self.housekeeping(now)
                 self.next_housekeeping = now + HOUSEKEEPING_S
+            self.check_selection()
             self.expire_lost(now)
             try:
                 while True:
@@ -378,10 +419,14 @@ def main() -> int:
     except OSError:
         return 0  # another watcher is already running
     PID_FILE.write_text(str(os.getpid()))
+    w = Watcher()
     try:
-        Watcher().run()
+        w.run()
     finally:
         PID_FILE.unlink(missing_ok=True)
+        lock.close()  # release before a replacement tries to take it
+    if w.restart:
+        spawn()
     return 0
 
 

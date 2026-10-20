@@ -25,6 +25,8 @@ One background watcher (`src/watcher.py`) does all the work:
 - **Saved machines:** `herdr --machine <id> agent list` every 2 seconds. herdr
   owns the SSH connection and reuses it between calls, so the plugin holds no
   credentials and runs none of its own code on remote machines.
+- Done vs idle follows the herdr sidebar, not the API: an agent that finished
+  stays done until its tab has been on screen in the TUI (`src/seen.py`).
 - Redraws the clock only when the grid changes.
 
 Polling instead of events: herdr only offers per-pane status subscriptions,
@@ -136,6 +138,7 @@ src/watcher.py         background watcher, and starting/stopping it
 src/herdr.py           herdr API socket and CLI access
 src/lametric.py        LaMetric local API client
 src/pixels.py          icons and the GIF encoder
+src/seen.py            done vs idle, as the herdr TUI shows it
 src/config.py          paths, .env config, settings
 ```
 
