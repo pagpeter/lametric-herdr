@@ -63,7 +63,7 @@ shows it.
 From GitHub:
 
 ```bash
-herdr plugin install pagepeter/lametric-herdr
+herdr plugin install pagpeter/lametric-herdr
 ```
 
 Or from a local checkout:
