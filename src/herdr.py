@@ -19,6 +19,7 @@ AGENT_FIELDS = (
     "agent",
     "agent_status",
     "state_change_seq",
+    "completion_seq",
     "terminal_title_stripped",
     "cwd",
     "foreground_cwd",

@@ -53,6 +53,28 @@ class DoneTrackerTest(unittest.TestCase):
         t.update(agents, on_screen=False)
         self.assertEqual(self.statuses(t, agents), ["idle", "done"])
 
+    def test_server_completion_seq_marks_done_without_watching_the_work(self):
+        t = DoneTracker()
+        t.update([agent("p1", "idle", 3)], on_screen=False)  # started: not finished
+        finished = [dict(agent("p1", "idle", 5), completion_seq=5)]
+        t.update(finished, on_screen=False)
+        self.assertEqual(self.statuses(t, finished), ["done"])
+
+    def test_startup_off_screen_trusts_completion_seq_over_seen_flag(self):
+        agents = [dict(agent("p1", "idle", 5), completion_seq=5), agent("p2", "idle", 4)]
+        off = DoneTracker()
+        off.update(agents, on_screen=False)
+        self.assertEqual(self.statuses(off, agents), ["done", "idle"])
+        on = DoneTracker()
+        on.update(agents, on_screen=True)
+        self.assertEqual(self.statuses(on, agents), ["idle", "idle"])
+
+    def test_stale_completion_seq_is_ignored(self):
+        t = DoneTracker()
+        agents = [dict(agent("p1", "idle", 6), completion_seq=5)]
+        t.update(agents, on_screen=False)
+        self.assertEqual(self.statuses(t, agents), ["idle"])
+
     def test_new_work_resets_done(self):
         t = DoneTracker()
         t.update([agent("p1", "working", 1)], False)

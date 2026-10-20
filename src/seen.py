@@ -6,7 +6,8 @@ server, for example, counts a pane in its own active tab as seen even while
 the TUI is showing another machine. This mirrors the TUI's logic
 (herdr src/client/shell/endpoint_agent_state.rs):
 
-- an agent completes when it goes from working to idle, or the server says done;
+- an agent completes when it goes from working to idle, the server says done,
+  or (herdr >= 0.9.5) the server's `completion_seq` matches `state_change_seq`;
 - it stays done until its pane has been on screen at or after that change,
   tracked with herdr's per-pane `state_change_seq`.
 
@@ -36,11 +37,13 @@ class DoneTracker:
         self.working &= panes
 
         if not self.started:
-            # Like the TUI on connect: whatever is already finished counts as
-            # seen unless the server itself still reports it as done.
+            # Nothing has been watched yet. On the machine the TUI shows, trust
+            # the server's seen flag. Elsewhere that flag is unreliable, so
+            # count server-known completions as unseen.
             self.started = True
             for a in agents:
-                if a["agent_status"] != "done":
+                finished = a["agent_status"] == "done" or (not on_screen and _server_completed(a))
+                if not finished:
                     self.acknowledged[a["pane_id"]] = _seq(a)
 
         for a in agents:
@@ -53,7 +56,8 @@ class DoneTracker:
             elif status in ("idle", "done"):
                 finished_work = pane in self.working
                 self.working.discard(pane)
-                if finished_work or status == "done" or self.completed.get(pane) == _seq(a):
+                if (finished_work or status == "done" or _server_completed(a)
+                        or self.completed.get(pane) == _seq(a)):
                     self.completed[pane] = _seq(a)
                 else:
                     self.completed.pop(pane, None)
@@ -85,3 +89,9 @@ class DoneTracker:
 
 def _seq(agent: Agent) -> int:
     return int(agent.get("state_change_seq") or 0)
+
+
+def _server_completed(agent: Agent) -> bool:
+    """herdr >= 0.9.5 reports whether the current idle period followed real work."""
+    completion = agent.get("completion_seq")
+    return completion is not None and completion == _seq(agent)
