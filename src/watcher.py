@@ -182,7 +182,7 @@ class Watcher:
         self.selection_mtime = 0.0
         self.selected = "local"  # the machine the herdr TUI is showing
         self.code_version = code_version()
-        self.restart = False
+        self.exit_action = ""  # "restart" or "handover" once the loop ends
         self.running = True
 
     def connect_device(self) -> Optional[LaMetric]:
@@ -211,30 +211,36 @@ class Watcher:
             self.order = order
             self.mark_dirty()
 
-    def plugin_installed(self) -> bool:
-        """False once the plugin is disabled, removed, or reinstalled elsewhere."""
+    def installation(self) -> str:
+        """"current", "removed" (uninstalled or disabled), or "moved" (the
+        plugin was reinstalled or linked from another directory)."""
         plugins = herdr.cli_json("plugin", "list", "--plugin", config.PLUGIN_ID, "--json")["result"]["plugins"]
         entry = next((p for p in plugins if p.get("plugin_id") == config.PLUGIN_ID), None)
         if not entry or not entry.get("enabled"):
-            log("plugin disabled or removed")
-            return False
+            return "removed"
         root = entry.get("plugin_root")
         if root and os.path.realpath(root) != str(config.PLUGIN_ROOT):
-            log(f"plugin now lives at {root}; handing over")
-            return False
-        return True
+            return "moved"
+        return "current"
 
     def housekeeping(self, now: float) -> None:
         self.cfg = config.load()
         self.dev = self.connect_device()
         try:
-            if not self.plugin_installed():
+            installation = self.installation()
+            if installation == "removed":
+                log("plugin disabled or removed")
                 self.reset_clockface()
+                self.running = False
+                return
+            if installation == "moved":
+                log("plugin installed elsewhere; handing over")
+                self.exit_action = "handover"
                 self.running = False
                 return
             if code_version() != self.code_version:
                 log("plugin code changed; restarting")
-                self.restart = True
+                self.exit_action = "restart"
                 self.running = False
                 return
             self.sync_machines()
@@ -425,8 +431,13 @@ def main() -> int:
     finally:
         PID_FILE.unlink(missing_ok=True)
         lock.close()  # release before a replacement tries to take it
-    if w.restart:
+    if w.exit_action == "restart":
         spawn()
+    elif w.exit_action == "handover":
+        # Start the new installation's watcher through herdr, which runs the
+        # new copy's code with its own environment.
+        subprocess.run([herdr.BIN, "plugin", "action", "invoke", f"{config.PLUGIN_ID}.refresh"],
+                       capture_output=True, timeout=15)
     return 0
 
 
