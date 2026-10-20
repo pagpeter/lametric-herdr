@@ -25,8 +25,10 @@ One background watcher (`src/watcher.py`) does all the work:
 - **Saved machines:** `herdr --machine <id> agent list` every 2 seconds. herdr
   owns the SSH connection and reuses it between calls, so the plugin holds no
   credentials and runs none of its own code on remote machines.
-- Done vs idle follows the herdr sidebar, not the API: an agent that finished
-  stays done until its tab has been on screen in the TUI (`src/seen.py`).
+- Done vs idle approximates the herdr sidebar, which the API does not expose
+  (`src/seen.py`). Local agents use the server's seen flag while the TUI shows
+  Local. A finished remote agent stays done until you switch to its machine or
+  tab, because remote servers mark agents seen that you never looked at.
 - Redraws the clock only when the grid changes.
 
 Polling instead of events: herdr only offers per-pane status subscriptions,

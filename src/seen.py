@@ -1,53 +1,62 @@
 """Which finished agents you have not looked at yet ("done" vs "idle").
 
-herdr's API reports a server-side `seen` flag, but the TUI tracks viewed
-completions itself, per machine, and that is what its sidebar shows. A remote
-server, for example, counts a pane in its own active tab as seen even while
-the TUI is showing another machine. This mirrors the TUI's logic
-(herdr src/client/shell/endpoint_agent_state.rs):
+The herdr sidebar tracks viewed completions in the TUI itself, and the API
+does not expose that. The local server's `seen` flag follows your terminal
+focus but not which machine the TUI shows; a remote server's flag is not
+reliable at all (it counts its active tab as seen even when you never looked).
+So:
 
-- an agent completes when it goes from working to idle, the server says done,
-  or (herdr >= 0.9.5) the server's `completion_seq` matches `state_change_seq`;
-- it stays done until its pane has been on screen at or after that change,
-  tracked with herdr's per-pane `state_change_seq`.
+- An agent completes when it goes from working to idle, the server says done,
+  or (herdr >= 0.9.5) its `completion_seq` matches `state_change_seq`.
+- Local: seen when the server says so while the TUI shows Local.
+- Remote: seen only once you navigate to it after it finished, by switching
+  to that machine or to the pane's tab.
+- Either: switching to the machine or tab marks what is in view as seen.
 
-"On screen" is approximated as: its machine is the one selected in the TUI,
-and the pane is in that machine's focused tab.
+Seen is tracked per completion with herdr's per-pane `state_change_seq`.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 Agent = dict[str, Any]
 
 
 class DoneTracker:
-    def __init__(self) -> None:
+    def __init__(self, trust_server_seen: bool) -> None:
+        self.trust_server_seen = trust_server_seen  # true for the local server
         self.started = False
         self.working: set[str] = set()
-        self.completed: dict[str, int] = {}  # pane -> seq of the completion
-        self.acknowledged: dict[str, int] = {}  # pane -> highest seq seen on screen
+        self.completed: dict[str, int] = {}  # pane -> seq of its completion
+        self.acknowledged: dict[str, int] = {}  # pane -> highest seq seen
+        self.server_status: dict[str, str] = {}
+        self.focused_tab: Optional[str] = None
 
-    def update(self, agents: list[Agent], on_screen: bool) -> None:
+    def update(self, agents: list[Agent], selected: bool) -> None:
+        """Apply a poll. `selected`: the TUI is showing this machine."""
         panes = {a["pane_id"] for a in agents}
-        for tracked in (self.completed, self.acknowledged):
+        for tracked in (self.completed, self.acknowledged, self.server_status):
             for pane in [p for p in tracked if p not in panes]:
                 del tracked[pane]
         self.working &= panes
+        focused_tab = next((a.get("tab_id") for a in agents if a.get("focused")), None)
 
         if not self.started:
-            # Nothing has been watched yet. On the machine the TUI shows, trust
-            # the server's seen flag. Elsewhere that flag is unreliable, so
-            # count server-known completions as unseen.
+            # On the machine the TUI shows, trust the server's seen flag;
+            # elsewhere count server-known completions as unseen.
             self.started = True
+            self.focused_tab = focused_tab
+            trust = self.trust_server_seen and selected
             for a in agents:
-                finished = a["agent_status"] == "done" or (not on_screen and _server_completed(a))
+                finished = a["agent_status"] == "done" or (not trust and _server_completed(a))
                 if not finished:
                     self.acknowledged[a["pane_id"]] = _seq(a)
 
         for a in agents:
-            pane, status = a["pane_id"], a["agent_status"]
+            pane, status, seq = a["pane_id"], a["agent_status"], _seq(a)
+            previous = self.server_status.get(pane)
+            self.server_status[pane] = status
             if status == "working":
                 self.working.add(pane)
                 self.completed.pop(pane, None)
@@ -56,27 +65,37 @@ class DoneTracker:
             elif status in ("idle", "done"):
                 finished_work = pane in self.working
                 self.working.discard(pane)
-                if (finished_work or status == "done" or _server_completed(a)
-                        or self.completed.get(pane) == _seq(a)):
-                    self.completed[pane] = _seq(a)
+                trust = self.trust_server_seen and selected
+                if self.completed.get(pane) == seq:
+                    if trust and previous == "done" and status == "idle":
+                        self.acknowledge_pane(a)  # the server saw you view it
+                elif finished_work or status == "done" or _server_completed(a):
+                    self.completed[pane] = seq
+                    if trust and status == "idle":
+                        self.acknowledge_pane(a)  # finished while you watched
                 else:
                     self.completed.pop(pane, None)
             else:
                 self.working.discard(pane)
                 self.completed.pop(pane, None)
 
-        if on_screen:
-            self.acknowledge(agents)
+        if selected and focused_tab != self.focused_tab:
+            self.acknowledge_tab(agents, focused_tab)  # you switched tabs
+        self.focused_tab = focused_tab
 
-    def acknowledge(self, agents: list[Agent]) -> None:
-        """Mark the panes of the focused tab as seen."""
-        focused_tab = next((a.get("tab_id") for a in agents if a.get("focused")), None)
-        if focused_tab is None:
-            return
-        for a in agents:
-            if a.get("tab_id") == focused_tab:
-                pane = a["pane_id"]
-                self.acknowledged[pane] = max(self.acknowledged.get(pane, -1), _seq(a))
+    def on_selected(self, agents: list[Agent]) -> None:
+        """The TUI switched to this machine: its focused tab is now in view."""
+        self.acknowledge_tab(agents, next((a.get("tab_id") for a in agents if a.get("focused")), None))
+
+    def acknowledge_tab(self, agents: list[Agent], tab: Optional[str]) -> None:
+        if tab is not None:
+            for a in agents:
+                if a.get("tab_id") == tab:
+                    self.acknowledge_pane(a)
+
+    def acknowledge_pane(self, agent: Agent) -> None:
+        pane = agent["pane_id"]
+        self.acknowledged[pane] = max(self.acknowledged.get(pane, -1), _seq(agent))
 
     def status(self, agent: Agent) -> str:
         status = agent["agent_status"]

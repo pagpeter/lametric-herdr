@@ -158,7 +158,7 @@ class Source:
         self.agents: Optional[list[herdr.Agent]] = None
         self.state = "connecting"
         self.lost_at: Optional[float] = None
-        self.tracker = DoneTracker()
+        self.tracker = DoneTracker(trust_server_seen=sid == "local")
 
     def statuses(self) -> dict[str, str]:
         """pane -> status as the herdr TUI shows it (done vs idle by what you have seen)."""
@@ -266,7 +266,7 @@ class Watcher:
             self.selected = selected
             src = self.sources.get(selected)
             if src and src.agents:
-                src.tracker.acknowledge(src.agents)
+                src.tracker.on_selected(src.agents)
                 self.mark_dirty()
 
     def expire_lost(self, now: float) -> None:
@@ -288,7 +288,7 @@ class Watcher:
             return
         agents = result["agents"]
         before = src.statuses() if src.agents is not None else None
-        src.tracker.update(agents, on_screen=sid == self.selected)
+        src.tracker.update(agents, selected=sid == self.selected)
         if src.state != "online":
             log(f"[{src.label}] online, {len(agents)} agents ({result['took']:.1f}s)")
         src.agents, src.state, src.lost_at = agents, "online", None
