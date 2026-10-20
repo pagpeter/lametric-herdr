@@ -45,6 +45,21 @@ class LaMetric:
     def device(self) -> Any:
         return self._request("GET", self._api("/device"))[1]
 
+    def clock_widget_id(self) -> str:
+        apps = self._request("GET", self._api("/device/apps/com.lametric.clock"))[1]
+        return next(iter(apps["widgets"]))
+
+    def set_clockface(self, icon: str, widget_id: str = "", activate: bool = False) -> None:
+        """Replace the clock app's icon; the clock keeps drawing the time next to it."""
+        widget_id = widget_id or self.clock_widget_id()
+        body = {
+            "id": "clock.clockface",
+            "params": {"type": "custom", "icon": icon},
+            "activate": activate,
+        }
+        path = f"/device/apps/com.lametric.clock/widgets/{widget_id}/actions"
+        self._request("POST", self._api(path), body)
+
     def push_widget(self, frames: list) -> None:
         if not self.push_url:
             raise LaMetricError("LAMETRIC_PUSH_URL is not configured")

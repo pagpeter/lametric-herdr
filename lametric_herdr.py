@@ -154,7 +154,10 @@ def device(cfg: Dict[str, str]) -> Optional[LaMetric]:
 def push_widget(cfg: Dict[str, str], dev: Optional[LaMetric], agents: List[Dict[str, Any]]) -> None:
     frames = widget_frames(agents)
     debug(cfg, "widget", frames[0]["text"])
-    if dev and cfg["LAMETRIC_PUSH_URL"]:
+    if not dev:
+        return
+    dev.set_clockface(frames[0]["icon"])
+    if cfg["LAMETRIC_PUSH_URL"]:
         dev.push_widget(frames)
 
 

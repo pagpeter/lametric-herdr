@@ -16,46 +16,77 @@ Frame = List[List[RGB]]  # [y][x]
 SIZE = 8
 BLACK: RGB = (0, 0, 0)
 
-# Two brightness steps per state: (bright, dim). Steady states use the same
-# color twice so every icon animates over the same two frames.
+# herdr's status hues (catppuccin: idle green, working yellow, done teal,
+# blocked red), saturated because pastels wash out to white on bare LEDs.
+# Two animation steps per state; steady states repeat the color. Channels
+# below ~90 do not light up on the Time v1, so "dim" stays above that.
 STATE_COLORS: Dict[str, Tuple[RGB, RGB]] = {
-    "working": ((0, 170, 255), (0, 50, 90)),
-    "blocked": ((255, 140, 0), (70, 30, 0)),
-    "done": ((0, 210, 70), (0, 210, 70)),
-    "idle": ((28, 28, 28), (28, 28, 28)),
-    "unknown": ((110, 0, 150), (110, 0, 150)),
+    "working": ((255, 180, 0), (130, 90, 0)),
+    "blocked": ((255, 20, 70), (140, 0, 40)),
+    "done": ((0, 200, 170), (0, 200, 170)),
+    "idle": ((40, 200, 40), (40, 200, 40)),
+    "unknown": ((100, 100, 100), (100, 100, 100)),
 }
 
+# herdr draws idle as a ring (○) and every other state filled (●); in a 2x2
+# block the "ring" is the block with its bottom-right pixel missing.
+HOLLOW = {"idle"}
+
 FRAME_DELAY_CS = 60  # centiseconds per animation frame
+
+DISC = """
+..####..
+.######.
+########
+########
+########
+########
+.######.
+..####..
+"""
+
+RING = """
+..####..
+.#....#.
+#......#
+#......#
+#......#
+#......#
+.#....#.
+..####..
+"""
 
 
 def blank() -> Frame:
     return [[BLACK] * SIZE for _ in range(SIZE)]
 
 
-def _cells(count: int) -> Tuple[int, List[int]]:
-    """Block size and offsets for a grid that fits `count` agents."""
-    if count <= 4:
-        return 3, [0, 5]
-    if count <= 9:
-        return 2, [0, 3, 6]
-    return 2, [0, 2, 4, 6]
+def _offsets(count: int) -> List[int]:
+    """2x2 blocks with a 1px gap fit 9 agents; up to 16 without gaps."""
+    return [0, 3, 6] if count <= 9 else [0, 2, 4, 6]
+
+
+def _block_mask(hollow: bool) -> List[Tuple[int, int]]:
+    return [(0, 0), (1, 0), (0, 1)] if hollow else [(0, 0), (1, 0), (0, 1), (1, 1)]
 
 
 def agent_grid(statuses: Sequence[str]) -> List[Frame]:
-    """One block per agent, row-major, colored by status. Max 16 agents."""
-    frames = [blank(), blank()]
+    """herdr-style status dots, one per agent, row-major. Max 16 agents."""
     if not statuses:
-        frames[0][3][3] = frames[1][3][3] = STATE_COLORS["idle"][0]
-        return frames
-    block, offsets = _cells(len(statuses))
+        return [blank(), blank()]
+    if len(statuses) == 1:
+        status = statuses[0]
+        art = RING if status in HOLLOW else DISC
+        return [from_ascii(art, {"#": c}) for c in STATE_COLORS.get(status, STATE_COLORS["unknown"])]
+
+    frames = [blank(), blank()]
+    offsets = _offsets(len(statuses))
     slots = [(x, y) for y in offsets for x in offsets]
     for status, (ox, oy) in zip(statuses, slots):
-        bright, dim = STATE_COLORS.get(status, STATE_COLORS["unknown"])
-        for i, color in enumerate((bright, dim)):
-            for dy in range(block):
-                for dx in range(block):
-                    frames[i][oy + dy][ox + dx] = color
+        colors = STATE_COLORS.get(status, STATE_COLORS["unknown"])
+        for frame, color in zip(frames, colors):
+            for dx, dy in _block_mask(status in HOLLOW):
+                frame[oy + dy][ox + dx] = color
     return frames
 
 
@@ -157,8 +188,9 @@ def encode_gif(frames: Sequence[Frame], delay_cs: int = FRAME_DELAY_CS) -> bytes
     lookup = {c: i for i, c in enumerate(palette)}
     min_code_size = 4  # 16-entry table
 
+    width, height = len(frames[0][0]), len(frames[0])
     out = bytearray(b"GIF89a")
-    out += struct.pack("<HHBBB", SIZE, SIZE, 0b1111_0011, 0, 0)
+    out += struct.pack("<HHBBB", width, height, 0b1111_0011, 0, 0)
     for r, g, b in palette:
         out += bytes((r, g, b))
 
@@ -171,7 +203,7 @@ def encode_gif(frames: Sequence[Frame], delay_cs: int = FRAME_DELAY_CS) -> bytes
     for frame in frames:
         if animated:
             out += b"\x21\xf9\x04\x04" + struct.pack("<H", delay_cs) + b"\x00\x00"
-        out += b"\x2c" + struct.pack("<HHHHB", 0, 0, SIZE, SIZE, 0)
+        out += b"\x2c" + struct.pack("<HHHHB", 0, 0, width, height, 0)
         indices = [lookup[c] for row in frame for c in row]
         out.append(min_code_size)
         out += _sub_blocks(_lzw_uncompressed(indices, min_code_size))
