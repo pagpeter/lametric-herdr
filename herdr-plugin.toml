@@ -12,14 +12,38 @@ command = ["python3", "lametric_herdr.py", "refresh"]
 on = "pane.agent_status_changed"
 command = ["python3", "lametric_herdr.py", "event"]
 
-# Keep the grid accurate when agent panes go away.
+# Re-read the agent list on events that change it without a status event:
+# viewing a finished agent turns done -> idle silently (herdr marks it seen),
+# and agents appear or disappear with their panes. Unchanged icons are not
+# re-sent, so frequent focus events stay cheap.
+
+[[events]]
+on = "pane.focused"
+command = ["python3", "lametric_herdr.py", "event"]
+
+[[events]]
+on = "tab.focused"
+command = ["python3", "lametric_herdr.py", "event"]
+
+[[events]]
+on = "workspace.focused"
+command = ["python3", "lametric_herdr.py", "event"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["python3", "lametric_herdr.py", "event"]
+
+[[events]]
+on = "pane.exited"
+command = ["python3", "lametric_herdr.py", "event"]
+
 [[events]]
 on = "pane.closed"
-command = ["python3", "lametric_herdr.py", "refresh"]
+command = ["python3", "lametric_herdr.py", "event"]
 
 [[events]]
 on = "workspace.closed"
-command = ["python3", "lametric_herdr.py", "refresh"]
+command = ["python3", "lametric_herdr.py", "event"]
 
 [[actions]]
 id = "refresh"

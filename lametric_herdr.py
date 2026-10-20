@@ -151,14 +151,26 @@ def device(cfg: Dict[str, str]) -> Optional[LaMetric]:
     return LaMetric(cfg["LAMETRIC_HOST"], cfg["LAMETRIC_API_KEY"], cfg["LAMETRIC_PUSH_URL"])
 
 
-def push_widget(cfg: Dict[str, str], dev: Optional[LaMetric], agents: List[Dict[str, Any]]) -> None:
+def push_widget(
+    cfg: Dict[str, str],
+    dev: Optional[LaMetric],
+    agents: List[Dict[str, Any]],
+    state: Dict[str, Any],
+    force: bool = False,
+) -> None:
+    """Redraw the clockface. Skipped when the icon is unchanged, because focus
+    events fire constantly while navigating and usually change nothing."""
     frames = widget_frames(agents)
-    debug(cfg, "widget", frames[0]["text"])
-    if not dev:
+    icon = frames[0]["icon"]
+    if not dev or (not force and state.get("icon") == icon):
         return
-    dev.set_clockface(frames[0]["icon"])
+    debug(cfg, "widget", frames[0]["text"])
+    if not state.get("clock_widget"):
+        state["clock_widget"] = dev.clock_widget_id()
+    dev.set_clockface(icon, state["clock_widget"])
     if cfg["LAMETRIC_PUSH_URL"]:
         dev.push_widget(frames)
+    state["icon"] = icon
 
 
 def cmd_event() -> int:
@@ -175,7 +187,7 @@ def cmd_event() -> int:
         agents = list_agents()
         errors = []
         try:
-            push_widget(cfg, dev, agents)
+            push_widget(cfg, dev, agents, state)
         except LaMetricError as e:
             errors.append(e)
 
@@ -208,12 +220,13 @@ def cmd_refresh() -> int:
         agents = list_agents()
         state = load_state()
         state["panes"] = {a["pane_id"]: a.get("agent_status") for a in agents if a.get("pane_id")}
-        save_state(state)
         try:
-            push_widget(cfg, dev, agents)
+            push_widget(cfg, dev, agents, state, force=True)
         except LaMetricError as e:
             log(str(e))
             return 1
+        finally:
+            save_state(state)
     return 0
 
 
